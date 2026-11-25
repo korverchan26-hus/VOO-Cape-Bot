@@ -1,0 +1,16 @@
+{
+  "fail_count": 0,
+  "last": {
+    "cape": 49.27,
+    "date": "2026-11-25",
+    "percentile": 100,
+    "spx": 7201.09,
+    "tier": 4,
+    "voo": 660.71
+  },
+  "pending_count": 0,
+  "pending_tier": null,
+  "shiller_last_refresh": "2026-11-25T13:50:14.468604+00:00",
+  "stale_alerted": true,
+  "tier": 4
+}
