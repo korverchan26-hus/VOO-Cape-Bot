@@ -1,0 +1,51 @@
+name: VOO CAPE bot
+
+on:
+  schedule:
+    # 22:30 UTC Mon–Fri = after the US close (8:30–9:30am Melbourne next day)
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      send_status:
+        description: "Email me the current reading"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cape-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          SHILLER_URL: ${{ secrets.SHILLER_URL }}
+          SEND_STATUS: ${{ inputs.send_status && '1' || '' }}
+        run: python cape_bot.py
+
+      - name: Commit state and history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add -A state.json cape_history.csv shiller_cache.csv
+          git diff --cached --quiet || git commit -m "Update CAPE state [skip ci]"
+          git push
