@@ -1,12 +1,12 @@
 {
   "fail_count": 0,
   "last": {
-    "cape": 49.27,
-    "date": "2026-11-25",
+    "cape": 49.15,
+    "date": "2026-11-26",
     "percentile": 100,
-    "spx": 7201.09,
+    "spx": 7182.78,
     "tier": 4,
-    "voo": 660.71
+    "voo": 658.87
   },
   "pending_count": 0,
   "pending_tier": null,
