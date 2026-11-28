@@ -22,9 +22,9 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -47,5 +47,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add -A state.json cape_history.csv shiller_cache.csv
-          git diff --cached --quiet || git commit -m "Update CAPE state [skip ci]"
-          git push
+          git diff --cached --quiet && exit 0
+          git commit -m "Update CAPE state [skip ci]"
+          # If the repo changed while the bot ran (e.g. you edited a file), catch up and retry
+          for i in 1 2 3; do
+            git pull --rebase -X theirs origin main && git push && exit 0
+            sleep 5
+          done
+          exit 1
