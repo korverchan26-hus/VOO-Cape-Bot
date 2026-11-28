@@ -1,16 +1,16 @@
 {
   "fail_count": 0,
   "last": {
-    "cape": 49.15,
-    "date": "2026-11-27",
-    "percentile": 100,
-    "spx": 7182.78,
+    "cape": 37.82,
+    "date": "2026-11-28",
+    "percentile": 92,
+    "spx": 7297.49,
     "tier": 4,
-    "voo": 658.87
+    "voo": 669.79
   },
   "pending_count": 0,
   "pending_tier": null,
-  "shiller_last_refresh": "2026-11-25T13:50:14.468604+00:00",
-  "stale_alerted": true,
+  "shiller_last_refresh": "2026-11-28T03:52:01.621408+00:00",
+  "stale_alerted": false,
   "tier": 4
 }
