@@ -23,8 +23,10 @@ market is cheap or expensive. VOO tracks the S&P 500, so the S&P 500's CAPE is V
 ## How the bot works
 
 1. **Earnings and inflation data** come from Robert Shiller's free dataset
-   (`ie_data.xls`, monthly, back to 1871). The bot re-downloads it once a week and
-   keeps a copy in the repo (`shiller_cache.csv`).
+   (`ie_data.xls`, monthly, back to 1871). The bot finds the current download link on
+   shillerdata.com, re-downloads it once a week, and keeps a copy in the repo
+   (`shiller_cache.csv`). If the data is more than ~4 months old, the bot **pauses tiers**
+   (an out-of-date CAPE would be wrong) and tells you once.
 2. **Today's S&P 500 price** comes from yfinance (`^GSPC`). VOO's price is fetched
    too, for the email.
 3. **Live CAPE** = today's S&P 500 price ÷ the 10-year average real earnings.
@@ -82,7 +84,7 @@ Go to **Settings → Secrets and variables → Actions → New repository secret
 | `SMTP_USER` | `you@gmail.com` | The account that sends the email |
 | `SMTP_PASS` | `abcd efgh ijkl mnop` | For Gmail, use an **App Password**, not your normal password |
 | `EMAIL_TO` | `you@gmail.com` | Where alerts go |
-| `SHILLER_URL` | *(optional)* | Direct download link for **ie_data** from shillerdata.com. Only needed if the default link stops working (see Troubleshooting) |
+| `SHILLER_URL` | *(optional)* | Direct download link for **ie_data** from shillerdata.com. Only needed if the bot can't find the link itself (see Troubleshooting) |
 
 These are the same SMTP secrets your other bots use.
 
@@ -145,22 +147,23 @@ Delete `state.json` afterwards if you don't want the local test to count as the 
 
 ## Troubleshooting
 
-**"No Shiller data available"**
-Shiller's data moved from Yale to shillerdata.com, and the old link may stop working.
-Go to shillerdata.com, right-click the **ie_data** download button, copy the link, and
-save it as the `SHILLER_URL` secret. Run the workflow again.
-
-**"Shiller data is old" warning**
-The download has been failing for a while and the bot is using its saved copy. Update
-`SHILLER_URL` as above. The bot keeps working on the saved copy in the meantime, but the
-10-year earnings figure slowly goes out of date.
+**"Shiller's data is out of date" email**
+The bot couldn't get current data (the old Yale file stopped updating in 2023), so it has
+paused tiers. Go to shillerdata.com, right-click the **ie_data** download button, copy the
+link, and save it as the `SHILLER_URL` secret. Run the workflow again; you'll get the
+"bot is live" email once it works.
 
 **"No S&P 500 price from yfinance"**
 Usually a temporary Yahoo problem; it often fixes itself. If it keeps happening, update
 yfinance (`yfinance>=` in `requirements.txt`).
 
-**The push step fails**
-Check step 3 of Setup (workflow permissions must be Read and write).
+**The "Commit state and history" step fails**
+Check step 3 of Setup (workflow permissions must be Read and write). The step already
+retries if you edited the repo while the bot was running.
+
+**Emails**
+Each run sends **at most one email**. If several things happen in one run, they're
+combined into that one email.
 
 **No email arrives**
 Check the Actions log for the run. For Gmail, make sure `SMTP_PASS` is an App Password.

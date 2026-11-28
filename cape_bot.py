@@ -19,6 +19,7 @@ Emails:
 Env vars:
   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_TO   (required)
   SHILLER_URL   optional: direct download link for ie_data.xls
+                (normally not needed: the bot finds the link on shillerdata.com)
   DRY_RUN=1     print emails instead of sending
   SEND_STATUS=1 email the current reading now
 """
@@ -27,6 +28,7 @@ import csv
 import io
 import json
 import os
+import re
 import smtplib
 import time
 from datetime import datetime, timezone
@@ -45,11 +47,9 @@ ALERT_WHEN_RISING_INTO = {3, 4}      # Expensive, Very expensive
 CONFIRM_RUNS = 2
 FAIL_ALERT_AFTER = 3                 # failed price fetches in a row
 SHILLER_REFRESH_DAYS = 7             # how often to re-download Shiller data
-SHILLER_STALE_DAYS = 100             # warn if Shiller's latest month is older
-SHILLER_URLS = [u for u in (
-    os.getenv("SHILLER_URL"),
-    "http://www.econ.yale.edu/~shiller/data/ie_data.xls",
-) if u]
+SHILLER_STALE_DAYS = 120             # data older than this is not trusted for tiers
+SHILLER_HOME = "https://shillerdata.com/"
+OLD_YALE_URL = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"  # stopped updating 2023
 
 ROOT = Path(__file__).parent
 STATE_FILE = ROOT / "state.json"
@@ -116,44 +116,69 @@ def parse_shiller(content):
     return df.reset_index(drop=True)
 
 
-def load_shiller(state, alerts):
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) cape-bot"}
+
+
+def find_shiller_links():
+    """Find the current ie_data download link(s) on shillerdata.com."""
+    try:
+        html = requests.get(SHILLER_HOME, timeout=60, headers=UA).text
+    except Exception as e:
+        print(f"Could not open {SHILLER_HOME}: {e}")
+        return []
+    links = []
+    for href in re.findall(r'href=["\']([^"\']+)["\']', html, flags=re.I):
+        href = href.replace("&amp;", "&")
+        if "ie_data" in href.lower() and "trcape" not in href.lower():
+            if href.startswith("//"):
+                href = "https:" + href
+            elif href.startswith("/"):
+                href = SHILLER_HOME.rstrip("/") + href
+            if href not in links:
+                links.append(href)
+    print(f"Found on shillerdata.com: {links or 'no ie_data link'}")
+    return links
+
+
+def data_age_days(df):
+    latest = datetime.strptime(df["month"].iloc[-1], "%Y-%m").replace(tzinfo=timezone.utc)
+    return (now_utc() - latest).days
+
+
+def download_freshest():
+    """Try every source; return the parsed data with the latest month."""
+    urls = [u for u in [os.getenv("SHILLER_URL"), *find_shiller_links(), OLD_YALE_URL] if u]
+    best = None
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=90, headers=UA)
+            r.raise_for_status()
+            df = parse_shiller(r.content)
+            print(f"  {url[:90]} -> data through {df['month'].iloc[-1]}")
+            if best is None or df["month"].iloc[-1] > best["month"].iloc[-1]:
+                best = df
+            if data_age_days(df) <= SHILLER_STALE_DAYS:
+                break               # fresh enough, stop looking
+        except Exception as e:
+            print(f"  {url[:90]} -> failed: {e}")
+    return best
+
+
+def load_shiller(state):
+    """Returns (data, is_fresh)."""
+    cached = pd.read_csv(SHILLER_CACHE, dtype={"month": str}) if SHILLER_CACHE.exists() else None
     last = state.get("shiller_last_refresh")
-    due = (not SHILLER_CACHE.exists() or not last or
+    due = (cached is None or not last or data_age_days(cached) > SHILLER_STALE_DAYS or
            (now_utc() - datetime.fromisoformat(last)).days >= SHILLER_REFRESH_DAYS)
     if due:
-        for url in SHILLER_URLS:
-            try:
-                r = requests.get(url, timeout=90,
-                                 headers={"User-Agent": "Mozilla/5.0 (cape-bot)"})
-                r.raise_for_status()
-                df = parse_shiller(r.content)
-                df.to_csv(SHILLER_CACHE, index=False)
-                state["shiller_last_refresh"] = now_utc().isoformat()
-                print(f"Shiller data refreshed from {url}: through {df['month'].iloc[-1]}")
-                break
-            except Exception as e:
-                print(f"Shiller download failed from {url}: {e}")
-        else:
-            print("Using cached Shiller data.")
-
-    if not SHILLER_CACHE.exists():
-        raise SystemExit(
-            "No Shiller data available. Copy the ie_data download link from "
-            "shillerdata.com into a repo secret called SHILLER_URL and run again.")
-
-    df = pd.read_csv(SHILLER_CACHE, dtype={"month": str})
-
-    # Warn once if the data has gone stale (download keeps failing)
-    latest = datetime.strptime(df["month"].iloc[-1], "%Y-%m").replace(tzinfo=timezone.utc)
-    age = (now_utc() - latest).days
-    if age > SHILLER_STALE_DAYS and not state.get("stale_alerted"):
-        alerts.append(f"⚠️ Shiller data is old (latest month {df['month'].iloc[-1]}). "
-                      "The download link has probably changed: update the SHILLER_URL "
-                      "secret from shillerdata.com.")
-        state["stale_alerted"] = True
-    elif age <= SHILLER_STALE_DAYS:
-        state["stale_alerted"] = False
-    return df
+        new = download_freshest()
+        if new is not None and (cached is None or new["month"].iloc[-1] >= cached["month"].iloc[-1]):
+            new.to_csv(SHILLER_CACHE, index=False)
+            cached = new
+            state["shiller_last_refresh"] = now_utc().isoformat()
+    if cached is None:
+        return None, False
+    return cached, data_age_days(cached) <= SHILLER_STALE_DAYS
 
 
 def ten_year_real_earnings(df):
@@ -234,9 +259,24 @@ def send(subject, body):
 # ---------------------------------------------------------------- main
 def main():
     state = load_state()
-    alerts = []
+    emails = []                      # (subject, body); combined into ONE email per run
 
-    df = load_shiller(state, alerts)
+    df, fresh = load_shiller(state)
+    if not fresh:
+        # Don't work out tiers from out-of-date earnings: the CAPE would be wrong.
+        latest = df["month"].iloc[-1] if df is not None else "none"
+        if not state.get("stale_alerted") or os.getenv("SEND_STATUS") == "1":
+            emails.append(("data problem",
+                f"⚠️ Shiller's data is out of date (latest month: {latest}), so the bot "
+                "is not working out tiers until it can get current data.\n\n"
+                "Fix: go to shillerdata.com, right-click the ie_data download button, "
+                "copy the link, and save it as a repo secret called SHILLER_URL. "
+                "You'll get the 'bot is live' email once it works."))
+            state["stale_alerted"] = True
+        finish(state, emails)
+        return
+    state["stale_alerted"] = False
+
     avg_real_e, earnings_through = ten_year_real_earnings(df)
     window, w_from, w_to = rolling_window(df)
     cutoffs = [round(float(x), 2) for x in np.percentile(window, [20, 40, 60, 80])]
@@ -245,10 +285,9 @@ def main():
     if spx is None:
         state["fail_count"] = state.get("fail_count", 0) + 1
         if state["fail_count"] == FAIL_ALERT_AFTER:
-            alerts.append(f"⚠️ No S&P 500 price from yfinance for {FAIL_ALERT_AFTER} runs in a row.")
-        if alerts:
-            send("VOO CAPE bot: data problem", "\n\n".join(alerts))
-        save_state(state)
+            emails.append(("data problem",
+                f"⚠️ No S&P 500 price from yfinance for {FAIL_ALERT_AFTER} runs in a row."))
+        finish(state, emails)
         return
     state["fail_count"] = 0
 
@@ -266,7 +305,7 @@ def main():
     new = reading["tier"]
     if state.get("tier") is None:                       # first run
         state.update(tier=new, pending_tier=None, pending_count=0)
-        send(f"VOO CAPE bot is live: {TIER_NAMES[new]}", describe(reading))
+        emails.append((f"bot is live: {TIER_NAMES[new]}", describe(reading)))
     elif new == state["tier"]:
         state.update(pending_tier=None, pending_count=0)
     else:
@@ -279,14 +318,23 @@ def main():
             state.update(tier=new, pending_tier=None, pending_count=0)
             if should_alert(old, new):
                 arrow = "📉 cheaper" if new < old else "📈 more expensive"
-                send(f"VOO is now {TIER_NAMES[new]} ({arrow})",
-                     f"{TIER_NAMES[old]} → {TIER_NAMES[new]}\n\n" + describe(reading))
+                emails.append((f"now {TIER_NAMES[new]} ({arrow})",
+                               f"{TIER_NAMES[old]} → {TIER_NAMES[new]}\n\n" + describe(reading)))
 
-    if os.getenv("SEND_STATUS") == "1":
-        send(f"VOO CAPE status: {TIER_NAMES[new]}", describe(reading))
-    if alerts:
-        send("VOO CAPE bot: data problem", "\n\n".join(alerts))
+    if os.getenv("SEND_STATUS") == "1" and not emails:
+        emails.append((f"status: {TIER_NAMES[new]}", describe(reading)))
+    finish(state, emails)
+
+
+def finish(state, emails):
+    """Save state FIRST, then send at most one email."""
     save_state(state)
+    if not emails and os.getenv("SEND_STATUS") == "1":
+        emails = [("status", "No reading available this run (see the Actions log).")]
+    if emails:
+        subject = "VOO CAPE " + " + ".join(s for s, _ in emails)
+        body = ("\n\n" + "-" * 40 + "\n\n").join(b for _, b in emails)
+        send(subject, body)
 
 
 if __name__ == "__main__":
